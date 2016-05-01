@@ -161,12 +161,14 @@ void check_entry_in_dir(void *img_ptr, struct superblock *sb, int src_dir, int t
 void is_current_parent_dir_exist(void *img_ptr, struct superblock *sb, void *bitmap) {
     struct dinode *inode = (struct dinode *) (img_ptr + 2 * BSIZE);
     int i = 0;
+    int *inode_refs = (int *) calloc(sb->ninodes+1, sizeof(int));
     for (i = 0; i < sb->ninodes; i++, inode++) {
         int inode_num = i;
         if (inode_num == 1 && inode->type != T_DIR)
             errorOutput("root directory does not exist");
         if (inode->type != T_DIR)
             continue;
+        //runs only for directories
         int j = 0, k = 0;
         int current_found = 0, parent_found = 0;
         int num_blocks = get_num_blocks(inode);
@@ -184,7 +186,13 @@ void is_current_parent_dir_exist(void *img_ptr, struct superblock *sb, void *bit
             struct dirent *dir = (struct dirent *) (img_ptr + block_num * BSIZE);
             int l = 0;
             int num_dir = BSIZE / DIRENTRYSIZ;
-            for (l = 0; l < num_dir; l++) {
+            for (l = 0; l < num_dir; l++, dir++) {
+                if (dir->inum == 0)
+                    continue;
+                if (inode->nlink > 0) {
+                    if (!strcmp(dir->name, ".") == 0 && !strcmp(dir->name, "..") == 0)
+                        inode_refs[dir->inum] += 1;
+                }
                 if (inode_num == 1) {
                     if (dir->inum == 1 && strcmp(dir->name, ".") == 0)
                         current_found = 1;
@@ -194,7 +202,6 @@ void is_current_parent_dir_exist(void *img_ptr, struct superblock *sb, void *bit
                     }
                 }
                 else {
-                    //todo  inode marked use but not found in a directory. - scan 1 dir scan 2 all files - check it
                     if (dir->inum == inode_num && strcmp(dir->name, ".") == 0)
                         current_found = 1;
                     if (strcmp(dir->name, "..") == 0) {
@@ -202,21 +209,41 @@ void is_current_parent_dir_exist(void *img_ptr, struct superblock *sb, void *bit
                         parent_found = 1;
                     }
                 }
-                dir++;
             }
         }
+        //checking parent and current directories
         if (!current_found || !parent_found) {
             if (inode_num == 1)
                 errorOutput("root directory does not exist");
             else
-                errorOutput("directory not properly formatted.");
+                errorOutput("directory not properly formatted");
         }
+    }
+    inode_refs[1] = 1; //adding ref for root directory explicitly
+    inode = (struct dinode *) (img_ptr + 2 * BSIZE);
+    i = 0;
+    for (i = 0; i < sb->ninodes; i++, inode++) {
+        //todo in-use here means type or nlinks
+        if (inode->type != T_DIR && inode->type != T_DEV && inode ->type != T_FILE && inode_refs[i] > 0)
+            errorOutput("inode referred to in directory but marked free");
+        if (inode->nlink > 0 && (inode->type == T_DIR || inode->type == T_DEV || inode->type == T_FILE)) {
+            if (inode_refs[i] == 0)
+                errorOutput("inode marked use but not found in a directory");
+        }
+        if (inode->type == T_FILE && inode->nlink != inode_refs[i])
+            errorOutput("bad reference count for file");
+        if (inode->type == T_DIR && (inode->nlink > 1 || inode_refs[i] > 1))
+            errorOutput("directory appears more than once in file system");
     }
 }
 
 int main(int argc, char *argv[]) {
-    int fd = open("fs.img", O_RDONLY);
-    assert(fd > -1);
+    if (argc != 2)
+        errorOutput("image not found");
+    char* inputFile = argv[1];
+    int fd = open(inputFile, O_RDONLY);
+    if (fd == -1)
+        errorOutput("image not found");
     int rc;
     struct stat sbuf;
     rc = fstat(fd, &sbuf);
